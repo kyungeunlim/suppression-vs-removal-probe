@@ -650,6 +650,119 @@ result.
    to biology in general.
 
 
+### Placement comparison (added 2026-09-23)
+
+2026-09-23. Script: gap_tables.py, extended to difference fine-tune (CB)
+minus filtered per draw inside the same bootstrap loop, from the same
+resampled item indices as the two existing comparisons. Seed 2001, 1000
+resamples, 2.5 and 97.5 percentiles, all unchanged. Positive means CB
+reads higher than filtered. The per-model percentiles recomputed on the
+way still match probe_bootstrap.json to 1.11e-16, and the two existing
+comparisons reproduce their earlier values exactly.
+
+Log: results/eval/gap_tables_20260923.log. Data:
+results/figures/probe/gap_paired_bootstrap_3way.json. Figures:
+gap_auc_3panel.png and gap_argmax4_3panel.png, which add the placement
+panel beside the two existing ones.
+
+Summary over layers 15 to 31, 17 layers.
+
+| metric | set | mean gap | positive | interval excludes zero |
+|---|---|---|---|---|
+| AUC | main | +0.0318 | 17/17 | 10/17 |
+| AUC | control | +0.0156 | 17/17 | 2/17 |
+| argmax4 | main | +0.0368 | 15/17 | 4/17 |
+| argmax4 | control | +0.0178 | 11/17 | 0/17 |
+
+Layers whose paired interval excludes zero, all of them above zero:
+
+- AUC, main: 15, 16, 17, 19, 21, 22, 23, 29, 30, 31
+- AUC, control: 16, 22
+- argmax4, main: 15, 16, 17, 23
+- argmax4, control: none
+
+No layer, on either set or either metric, has an interval lying entirely
+below zero.
+
+Ordering of the three checkpoints. Averaged over layers 15 to 31 the
+order is base, fine-tune, filtered, on both sets: base minus CB and CB
+minus filtered are both positive in the mean, and the mean gaps are
+additive by construction. On main AUC, base minus CB 0.0055 plus CB
+minus filtered 0.0318 gives base minus filtered 0.0374; on control,
+0.0107 plus 0.0156 gives 0.0262.
+
+That ordering is a statement about the mean, not about every layer. The
+base minus CB gap is negative at some layers in the window, so base
+reads below CB there:
+
+- AUC, main: 26, 28, 29, 30, 31
+- AUC, control: none
+- argmax4, main: 15, 16, 17, 19, 24, 28
+- argmax4, control: 18, 19, 20, 21, 24
+
+Every one of those base minus CB intervals includes zero, so none of the
+reversals is resolved. Where one occurs, CB minus filtered exceeds base
+minus filtered by exactly the same amount, since the difference between
+the two comparisons is base minus CB by construction.
+
+Caveats on what these numbers support. Constraints on the reading, not
+the reading itself.
+
+1. The placement panel is not independent evidence. CB minus filtered
+   equals (base minus filtered) minus (base minus CB) exactly, verified
+   to zero error across all 128 layer-set-metric cells. The three panels
+   are three views of two independent quantities.
+
+2. The comparison is cross-run as well as cross-state. Filtered is an
+   independent pretraining run while CB descends from base, so CB minus
+   filtered carries the fine-tune plus everything that differs between
+   two separate pretraining runs. Because base minus CB is small, the
+   placement gap is close to the base minus filtered gap, and whatever
+   explains that one largely explains this one.
+
+3. What the band covers. Item sampling only: 1000 resamples with
+   replacement of the 323 held-out items, models fixed. Probe-fit
+   variance is excluded (axis two, 0.015 to 0.024 argmax4 and 0.006 to
+   0.010 AUC per model; the paired version is not recoverable from the
+   stored output, which kept only the mean and sd of the 30 refits).
+   Variation between two models in the same knowledge state is not
+   represented at all. An interval excluding zero therefore means the
+   gap exceeds item-sampling noise, not that the two knowledge states
+   differ.
+
+4. Control asymmetry. CB minus filtered resolves at 0 of 17 layers on
+   argmax4 control and 2 of 17 on AUC control, against 13 of 17 for base
+   minus filtered on AUC control. The two comparisons do not behave the
+   same way on the control set.
+
+5. Layer selection. Across both sets and both metrics, 16 of 68
+   intervals exclude zero, against roughly 3.4 expected under a global
+   null at 95%. So this is not pure selection noise, but naming
+   particular layers after scanning all 32 is post-hoc, and the layers
+   are strongly correlated, so 68 is not 68 independent tests.
+
+6. The two metrics disagree about which layers resolve while being
+   computed from the same scores. argmax4 collapses 1292 examples into
+   323 item decisions, so its intervals run about 1.7 times wider. The
+   disagreement is resolution, not signal.
+
+7. The suppressed label is unvalidated. No recovery attack was run, so
+   the fine-tune's label rests on construction rather than on
+   demonstrated recoverability. That sits upstream of any interval.
+
+8. The measurement that would license a knowledge-state claim is
+   separation expressed in units of same-state variation, per the
+   scoping document's sensitivity criterion. This pilot never produced
+   that quantity: both bootstrap axes hold the trained models fixed.
+
+Taken together, these numbers do not support a separation between the
+suppressed and removed proxies. Two things stand in the way, and only
+one of them is about the plot. The bands cover item sampling only, so
+they understate the uncertainty. But even a complete band would not
+settle it, because a knowledge-state claim requires separation measured
+against same-state variation, and that quantity was never measured here.
+
+
 ## T7. Sanity checks
 
 Grouped by what could have gone wrong rather than as a flat list.

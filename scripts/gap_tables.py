@@ -45,6 +45,42 @@ Prompt (2026-09-02):
     so logs and result files do not carry the laptop's home directory.
     Output-only change; no computation touched.
 
+2026-09-23, appended prompt (placement comparison, CB minus filtered):
+    2026-09-23, addition after the report. Extend the paired bootstrap in
+    scripts/gap_tables.py to add the placement comparison, fine-tune (CB)
+    minus filtered, alongside the existing base minus filtered and base
+    minus CB.
+
+    Compute it inside the same bootstrap loop, from the same resampled
+    item indices per draw, so the three comparisons share item draws.
+    Do not change the seed, the number of draws, the percentiles, or any
+    existing output value. Use the same sign convention as the existing
+    panels (first named model minus second), so positive means CB reads
+    higher than filtered.
+
+    Outputs:
+    - Add a third panel, "fine-tune (CB) minus filtered", to both figures
+      (argmax4 and AUC), same axes, styling, and footnote. Save as new
+      files results/figures/gap_argmax4_3panel.png and gap_auc_3panel.png;
+      leave the existing two-panel figures untouched.
+    - Extend the gap table output with the new comparison as additional
+      columns, written to a new file alongside the existing one.
+    - Print the per-layer table for the new comparison (point estimate,
+      2.5 and 97.5 percentiles, main and control, argmax4 and AUC) before
+      writing anything.
+
+    Append a dated entry to docs/results.md under "Placement comparison
+    (added 2026-09-23)" that states the numbers and which layers have
+    intervals excluding zero. State only the ordering of the checkpoints;
+    I will write the interpretation.
+
+2026-09-23, appended prompt (figure footnote):
+    Update the figure footnote to say the band covers item sampling only,
+    that probe-fit variance is excluded, and that same-state variation is
+    not represented, so an interval excluding zero does not mean the two
+    knowledge states differ. Applies to both the two-panel and three-panel
+    figures, which share the caption.
+
 Model keys follow probe_sweep.json "meta.models": base = unfiltered,
 fine-tune = unlearned-cb (circuit breakers), filtered = e2e-strong-filter.
 
@@ -78,6 +114,12 @@ Outputs:
         paired 95% bootstrap bands, zero line, intervention layers marked.
     OUT_DIR/gap_paired_bootstrap.json    the paired intervals, so the
         write-up can quote them without rerunning.
+    OUT_DIR/gap_argmax4_3panel.png, OUT_DIR/gap_auc_3panel.png    the same
+        two panels plus a third, CB minus filtered (the placement
+        comparison). The two-panel files above are still written unchanged.
+    OUT_DIR/gap_paired_bootstrap_3way.json    all three comparisons,
+        each record carrying "left" and "right" model keys. The two-way
+        file above is still written unchanged.
 
 Usage:
     python scripts/gap_tables.py OUT_DIR [--sweep results/probe_sweep.json]
@@ -120,7 +162,11 @@ SET_STYLE = {"main": dict(color="C0", linestyle="-"),
 BAND_CAPTION = ("Bands: paired 95% bootstrap interval over held-out items "
                 "(both models scored on the same resampled items, difference "
                 "per draw). Lines: fixed-C refit gaps from the saved scores. "
-                "Fit variance is not included.")
+                "The bands cover item sampling only. Probe-fit variance is "
+                "excluded, and variation between models in the same knowledge "
+                "state is not represented at all, so an interval excluding "
+                "zero means the gap exceeds item-sampling noise, not that the "
+                "two knowledge states differ.")
 
 
 def rel(p: Path) -> str:
@@ -182,11 +228,16 @@ def draw_metrics(per_item: np.ndarray, answers: np.ndarray, idx: np.ndarray):
 
 def paired_bootstrap(z, sets_answers: dict, seed: int, n_resamples: int,
                      n_layers: int, ho: dict):
-    """Return (paired, point, max_check) where
+    """Return (paired, placement, point, max_check) where
     paired[(metric, set, other)] = (n_layers, 2) lo/hi of base minus other,
+    placement[(metric, set)] = (n_layers, 2) lo/hi of CB minus filtered,
     point[(metric, set, model)] = (n_layers,) fixed-C point estimates,
-    max_check = largest |recomputed per-model percentile - stored| ."""
-    paired, point, max_check = {}, {}, 0.0
+    max_check = largest |recomputed per-model percentile - stored| .
+
+    All three comparisons are differenced per draw from the same resampled
+    item indices, so they share item draws and the shared item variation
+    cancels in each."""
+    paired, placement, point, max_check = {}, {}, {}, 0.0
     models = (BASE, FINETUNE, FILTERED)
     for iset, set_name in enumerate(SETS):
         answers = sets_answers[set_name]
@@ -219,7 +270,13 @@ def paired_bootstrap(z, sets_answers: dict, seed: int, n_resamples: int,
                     lo, hi = np.percentile(diff, [2.5, 97.5])
                     paired.setdefault((metric, set_name, other),
                                       np.zeros((n_layers, 2)))[layer] = (lo, hi)
-    return paired, point, max_check
+            # Placement comparison, same draws: positive = CB above filtered.
+            for metric in METRICS:
+                diff = draws[FINETUNE][metric] - draws[FILTERED][metric]
+                lo, hi = np.percentile(diff, [2.5, 97.5])
+                placement.setdefault((metric, set_name),
+                                     np.zeros((n_layers, 2)))[layer] = (lo, hi)
+    return paired, placement, point, max_check
 
 
 def plot_gaps(metric: str, paired: dict, point: dict, n_layers: int,
@@ -249,6 +306,49 @@ def plot_gaps(metric: str, paired: dict, point: dict, n_layers: int,
     fig.text(0.01, 0.01, BAND_CAPTION, fontsize=7, color="gray", wrap=True)
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     out = out_dir / f"gap_{metric}.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
+def plot_gaps_3panel(metric: str, paired: dict, placement: dict, point: dict,
+                     n_layers: int, out_dir: Path) -> Path:
+    """The two existing panels plus the placement comparison. Same styling,
+    bands and footnote as plot_gaps; written to its own file."""
+    layers = np.arange(n_layers)
+    panels = [
+        (f"base minus {LONG[FILTERED]}", BASE, FILTERED,
+         lambda s: paired[(metric, s, FILTERED)]),
+        (f"base minus {LONG[FINETUNE]}", BASE, FINETUNE,
+         lambda s: paired[(metric, s, FINETUNE)]),
+        (f"{LONG[FINETUNE]} minus {LONG[FILTERED]}", FINETUNE, FILTERED,
+         lambda s: placement[(metric, s)]),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), sharey=True)
+    for ax, (title, left, right, band_of) in zip(axes, panels):
+        for i, set_name in enumerate(SETS):
+            gap = point[(metric, set_name, left)] - point[(metric, set_name, right)]
+            band = band_of(set_name)
+            st = SET_STYLE[set_name]
+            ax.fill_between(layers, band[:, 0], band[:, 1], color=st["color"],
+                            alpha=0.15, linewidth=0,
+                            label="paired 95% CI" if i == 0 else None)
+            ax.plot(layers, gap, marker=".", linewidth=1.5, color=st["color"],
+                    linestyle=st["linestyle"], label=f"{set_name} set")
+        ax.axhline(0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+        mark_intervention_layers(ax)
+        ax.set_title(title)
+        ax.set_xlabel("layer")
+        ax.set_xticks(range(0, n_layers, 5))
+        ax.grid(alpha=0.25)
+    # Neutral label: the third panel is not a base-minus-model gap.
+    axes[0].set_ylabel(f"gap in {METRIC_LABEL[metric]} (first minus second)")
+    axes[2].legend(fontsize=8, loc="best")
+    fig.suptitle(f"Probe gap vs layer at cand_end, {METRIC_LABEL[metric]}",
+                 fontsize=11)
+    fig.text(0.01, 0.01, BAND_CAPTION, fontsize=7, color="gray", wrap=True)
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    out = out_dir / f"gap_{metric}_3panel.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return out
@@ -308,7 +408,7 @@ def main() -> None:
     print(f"\nrecomputing held-out item bootstrap from npz: seed {seed}, "
           f"{n_resamples} resamples, draws default_rng([seed, layer, iset]) "
           f"with iset main=0, control=1 ...", flush=True)
-    paired, point, max_check = paired_bootstrap(
+    paired, placement, point, max_check = paired_bootstrap(
         z, sets_answers, seed, n_resamples, n_layers, ho)
     print(f"check: max |recomputed per-model percentile - stored in "
           f"probe_bootstrap.json| = {max_check:.2e}"
@@ -380,6 +480,35 @@ def main() -> None:
                 cells.append(f"{s:>29}")
             print(f"{layer:>5} " + " ".join(cells))
 
+        # ---- placement comparison, CB minus filtered ----
+        print("-" * 72)
+        print(f"{metric}: placement comparison, {LONG[FINETUNE]} minus "
+              f"{LONG[FILTERED]}, paired 95% bootstrap interval")
+        print("  positive = CB reads higher than filtered; same draws as the "
+              "comparisons above")
+        print(f"{'layer':>5} {'main gap [lo, hi]':>28} "
+              f"{'control gap [lo, hi]':>28}")
+        for layer in range(n_layers):
+            cells = []
+            for set_name in SETS:
+                g = (point[(metric, set_name, FINETUNE)][layer]
+                     - point[(metric, set_name, FILTERED)][layer])
+                lo, hi = placement[(metric, set_name)][layer]
+                cells.append(f"{f'{g:+.3f} [{lo:+.3f},{hi:+.3f}]':>28}")
+            print(f"{layer:>5} " + " ".join(cells))
+        for set_name in SETS:
+            band = placement[(metric, set_name)][summ_layers]
+            g = np.array([point[(metric, set_name, FINETUNE)][l]
+                          - point[(metric, set_name, FILTERED)][l]
+                          for l in summ_layers])
+            above = [l for l, b in zip(summ_layers, band) if b[0] > 0]
+            below = [l for l, b in zip(summ_layers, band) if b[1] < 0]
+            print(f"  {set_name:>7}, layers {summ_layers[0]}-{summ_layers[-1]}: "
+                  f"mean {g.mean():+.4f}, positive {int((g > 0).sum())}/"
+                  f"{len(summ_layers)}, CI above zero {len(above)}"
+                  f"{' at ' + str(above) if above else ''}, CI below zero "
+                  f"{len(below)}{' at ' + str(below) if below else ''}")
+
         # ---- per-point uncertainty for a few deep layers ----
         print("-" * 72)
         print(f"{metric}: per-point uncertainty at deep layers "
@@ -412,6 +541,9 @@ def main() -> None:
         out = plot_gaps(metric, paired, point, n_layers, n_resamples,
                         args.out_dir)
         print(f"\nwrote {rel(out)}")
+        out3 = plot_gaps_3panel(metric, paired, placement, point, n_layers,
+                                args.out_dir)
+        print(f"wrote {rel(out3)}")
     records = []
     for (metric, set_name, other), band in paired.items():
         for layer in range(n_layers):
@@ -439,6 +571,48 @@ def main() -> None:
         },
         "records": records}, indent=1))
     print(f"wrote {rel(out_json)}")
+
+    # Same records plus the placement comparison, in a separate file so the
+    # two-way file above keeps its exact contents.
+    records3 = []
+    for (metric, set_name, other), band in paired.items():
+        for layer in range(n_layers):
+            records3.append({
+                "layer": layer, "set": set_name, "metric": metric,
+                "left": BASE, "right": other,
+                "gap": float(point[(metric, set_name, BASE)][layer]
+                             - point[(metric, set_name, other)][layer]),
+                "lo": float(band[layer, 0]), "hi": float(band[layer, 1]),
+                "sweep_gap": float(sw[(layer, set_name, BASE)][metric]
+                                   - sw[(layer, set_name, other)][metric]),
+            })
+    for (metric, set_name), band in placement.items():
+        for layer in range(n_layers):
+            records3.append({
+                "layer": layer, "set": set_name, "metric": metric,
+                "left": FINETUNE, "right": FILTERED,
+                "gap": float(point[(metric, set_name, FINETUNE)][layer]
+                             - point[(metric, set_name, FILTERED)][layer]),
+                "lo": float(band[layer, 0]), "hi": float(band[layer, 1]),
+                "sweep_gap": float(sw[(layer, set_name, FINETUNE)][metric]
+                                   - sw[(layer, set_name, FILTERED)][metric]),
+            })
+    out_json3 = args.out_dir / "gap_paired_bootstrap_3way.json"
+    out_json3.write_text(json.dumps({
+        "meta": {
+            "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "sweep_file": rel(args.sweep), "bootstrap_file": rel(args.bootstrap),
+            "scores_file": rel(args.scores),
+            "heldout_bootstrap_seed": seed, "n_heldout_resamples": n_resamples,
+            "draw_note": "default_rng([seed, layer, iset]).integers(0, n_ho, "
+                         "size=(n_resamples, n_ho)); iset main=0, control=1; "
+                         "same draws as probe_bootstrap.py, shared by all "
+                         "three comparisons",
+            "interval": "2.5/97.5 percentiles of per-draw (left - right)",
+            "per_model_percentile_check_max_abs_diff": max_check,
+        },
+        "records": records3}, indent=1))
+    print(f"wrote {rel(out_json3)}")
 
 
 if __name__ == "__main__":
